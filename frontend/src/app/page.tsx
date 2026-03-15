@@ -136,36 +136,37 @@ export default function Home() {
     const liveAgents: AgentStatusInfo[] = DEMO_AGENTS.map((a) => ({ ...a, status: "queued" as const, elapsed: 0 }));
     setAgentStatuses([...liveAgents]);
 
-    let response: OrchestratorResponse = { ...MOCK_RESPONSE, query: query.trim() };
+    let response: OrchestratorResponse | null = null;
     let estimatedCost = 0;
 
     if (useMock) {
       // Demo mode: use simulation + mock response
       const finalStatuses = await simulateAgentExecution();
-      response = { ...MOCK_RESPONSE, query: query.trim() };
+      const mockResp = { ...MOCK_RESPONSE, query: query.trim() };
       estimatedCost = 0.01 + Math.random() * 0.04;
       setCurrentQueryCost(estimatedCost);
 
       const totalLatency = (Date.now() - startTime) / 1000;
       const metadata: QueryMetadata = {
         timestamp: new Date(),
-        agentsUsed: response.agent_outputs.map((ao) => ao.agent_name),
-        sourcesHit: response.agent_outputs.reduce((s, ao) => s + ao.evidence.length, 0),
+        agentsUsed: mockResp.agent_outputs.map((ao) => ao.agent_name),
+        sourcesHit: mockResp.agent_outputs.reduce((s, ao) => s + ao.evidence.length, 0),
         totalLatency,
         estimatedCost,
       };
       setMessages((prev) => [...prev, {
-        id: generateId(), role: "assistant", content: response.executive_summary,
-        timestamp: new Date(), response, agentStatuses: finalStatuses, metadata,
+        id: generateId(), role: "assistant", content: mockResp.executive_summary,
+        timestamp: new Date(), response: mockResp, agentStatuses: finalStatuses, metadata,
       }]);
       setSessionCost((prev) => prev + estimatedCost);
-      setSuggestedChips(response.follow_up_questions.slice(0, 3));
+      setSuggestedChips(mockResp.follow_up_questions.slice(0, 3));
       setIsProcessing(false);
       setTimeout(() => setAgentPanelCollapsed(true), 1500);
       return;
     }
 
     // Live mode: consume real SSE stream
+    let streamError: string | null = null;
     try {
       const agentStartTimes: Record<string, number> = {};
 
@@ -198,7 +199,7 @@ export default function Home() {
           agentStartTimes[agentName] = Date.now();
           setAgentStatuses((prev) =>
             prev.map((a) =>
-              a.name === agentName || a.displayName === agentName
+              a.name === agentName
                 ? { ...a, status: "running" as const, elapsed: 0 }
                 : a
             )
@@ -212,7 +213,7 @@ export default function Home() {
             : 0;
           setAgentStatuses((prev) =>
             prev.map((a) =>
-              a.name === agentName || a.displayName === agentName
+              a.name === agentName
                 ? { ...a, status: event.status === "error" ? "failed" as const : "done" as const, elapsed }
                 : a
             )
@@ -229,14 +230,19 @@ export default function Home() {
         }
 
         if (event.event === "cache_hit") {
-          // All agents instant — mark all done
           setAgentStatuses((prev) => prev.map((a) => ({ ...a, status: "done" as const, elapsed: 0 })));
+        }
+
+        if (event.event === "error") {
+          clearInterval(elapsedInterval);
+          streamError = event.message ?? "Backend error";
+          break;
         }
       }
 
       clearInterval(elapsedInterval);
-    } catch {
-      // Fallback to direct JSON call if SSE fails
+    } catch (err) {
+      // SSE failed — try direct JSON call
       try {
         response = await sendQuery({
           query: query.trim(),
@@ -244,35 +250,54 @@ export default function Home() {
           product_name: product.name,
           session_id: sessionId,
         });
-      } catch {
-        response = { ...MOCK_RESPONSE, query: query.trim() };
+      } catch (e) {
+        streamError = e instanceof Error ? e.message : "Could not reach backend";
       }
     }
 
+    if (!response) {
+      // Show error message in chat instead of mock data
+      const errorText = streamError
+        ? `Backend error: ${streamError}`
+        : "No response received. Make sure the backend is running on http://localhost:8000.";
+      setMessages((prev) => [...prev, {
+        id: generateId(),
+        role: "assistant",
+        content: errorText,
+        timestamp: new Date(),
+      }]);
+      setAgentStatuses((prev) => prev.map((a) =>
+        a.status === "queued" || a.status === "running" ? { ...a, status: "failed" as const } : a
+      ));
+      setIsProcessing(false);
+      return;
+    }
+
     const totalLatency = (Date.now() - startTime) / 1000;
-    const totalSources = response.agent_outputs.reduce((sum, ao) => sum + ao.evidence.length, 0);
+    const totalSources = response.agent_outputs.reduce((sum, ao) => sum + (ao.evidence?.length ?? 0), 0);
 
-    const finalStatuses = agentStatuses.map((a) =>
-      a.status === "queued" || a.status === "running" ? { ...a, status: "done" as const } : a
-    );
-
-    const metadata: QueryMetadata = {
-      timestamp: new Date(),
-      agentsUsed: response.agent_outputs.map((ao) => ao.agent_name),
-      sourcesHit: totalSources,
-      totalLatency,
-      estimatedCost,
-    };
-
-    setMessages((prev) => [...prev, {
-      id: generateId(),
-      role: "assistant",
-      content: response.executive_summary,
-      timestamp: new Date(),
-      response,
-      agentStatuses: finalStatuses,
-      metadata,
-    }]);
+    setAgentStatuses((prev) => {
+      const updated = prev.map((a) =>
+        a.status === "queued" || a.status === "running" ? { ...a, status: "done" as const } : a
+      );
+      const metadata: QueryMetadata = {
+        timestamp: new Date(),
+        agentsUsed: response!.agent_outputs.map((ao) => ao.agent_name),
+        sourcesHit: totalSources,
+        totalLatency,
+        estimatedCost,
+      };
+      setMessages((msgs) => [...msgs, {
+        id: generateId(),
+        role: "assistant",
+        content: response!.executive_summary || "Analysis complete.",
+        timestamp: new Date(),
+        response: response!,
+        agentStatuses: updated,
+        metadata,
+      }]);
+      return updated;
+    });
 
     setSessionCost((prev) => prev + estimatedCost);
     setSuggestedChips(response.follow_up_questions.slice(0, 3));

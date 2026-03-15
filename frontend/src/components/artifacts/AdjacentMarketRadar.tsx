@@ -50,7 +50,7 @@ export default function AdjacentMarketRadar({ payload }: Props) {
             <g key={i}>
               <circle cx={cx} cy={cy} r={r} fill="none" stroke="#334155" strokeDasharray="4 4" strokeWidth={1} />
               <text x={cx + r + 5} y={cy - 5} fill="#64748b" fontSize={9}>
-                {payload.rings[i]?.label}
+                {payload.rings?.[i]?.label}
               </text>
             </g>
           ))}

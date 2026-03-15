@@ -1,12 +1,12 @@
 import { OrchestratorResponse, AgentStatusInfo } from "@/types";
 
 export const DEMO_AGENTS: AgentStatusInfo[] = [
-  { name: "market_trends", displayName: "Market & Trend Sensing", status: "queued", elapsed: 0 },
-  { name: "competitive_landscape", displayName: "Competitive Landscape", status: "queued", elapsed: 0 },
-  { name: "win_loss", displayName: "Win / Loss Intelligence", status: "queued", elapsed: 0 },
-  { name: "pricing", displayName: "Pricing & Packaging", status: "queued", elapsed: 0 },
-  { name: "positioning", displayName: "Positioning & Messaging", status: "queued", elapsed: 0 },
-  { name: "adjacent_threat", displayName: "Adjacent Market Collision", status: "queued", elapsed: 0 },
+  { name: "MarketTrendsAgent", displayName: "Market & Trend Sensing", status: "queued", elapsed: 0 },
+  { name: "CompetitiveLandscapeAgent", displayName: "Competitive Landscape", status: "queued", elapsed: 0 },
+  { name: "WinLossAgent", displayName: "Win / Loss Intelligence", status: "queued", elapsed: 0 },
+  { name: "PricingAgent", displayName: "Pricing & Packaging", status: "queued", elapsed: 0 },
+  { name: "PositioningAgent", displayName: "Positioning & Messaging", status: "queued", elapsed: 0 },
+  { name: "AdjacentThreatAgent", displayName: "Adjacent Market Collision", status: "queued", elapsed: 0 },
 ];
 
 export const STARTER_CHIPS = [

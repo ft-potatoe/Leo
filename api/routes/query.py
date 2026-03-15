@@ -23,12 +23,12 @@ router = APIRouter()
 memory = MemoryManager()
 registry = AgentRegistry()
 
-registry.register(PricingAgent(), keywords=["pricing", "price", "cost", "plan"])
-registry.register(CompetitiveLandscapeAgent(), keywords=["competitor", "competition", "competitive", "versus", "vs"])
-registry.register(MarketTrendsAgent(), keywords=["market", "trend", "industry", "growth"])
-registry.register(PositioningAgent(), keywords=["positioning", "messaging", "brand", "narrative"])
-registry.register(WinLossAgent(), keywords=["loss", "win", "customer", "churn", "deal"])
-registry.register(AdjacentThreatAgent(), keywords=["adjacent", "disruption", "threat", "entrant"])
+registry.register(PricingAgent())
+registry.register(CompetitiveLandscapeAgent())
+registry.register(MarketTrendsAgent())
+registry.register(PositioningAgent())
+registry.register(WinLossAgent())
+registry.register(AdjacentThreatAgent())
 
 orchestrator = Orchestrator(registry=registry, memory=memory)
 

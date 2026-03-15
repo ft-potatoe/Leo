@@ -53,11 +53,10 @@ class AdjacentThreatAgent(BaseAgent):
         # Step 5: generate findings (regex baseline)
         regex_findings = self.generate_findings(signals, query)
 
-        # Step 5b: enhance with LLM analysis
-        findings = await self._llm_enhance_findings(query, sources, regex_findings)
-
-        # Step 6: generate artifacts
-        artifacts = self._generate_artifacts(signals, query)
+        # Step 5b: enhance with LLM analysis (returns findings + LLM-shaped artifact)
+        findings, artifacts = await self._llm_enhance_findings(
+            query, sources, regex_findings, self._generate_artifacts(signals, query)
+        )
 
         return AgentOutput(
             agent_name=self.name,

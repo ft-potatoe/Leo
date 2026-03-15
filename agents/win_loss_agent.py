@@ -46,8 +46,9 @@ class WinLossAgent(BaseAgent):
             errors.append(f"Source collection failed: {e}")
 
         regex_findings = self._generate_findings(all_signals, company)
-        findings = await self._llm_enhance_findings(query, sources, regex_findings)
-        artifacts = self._build_artifacts(all_signals)
+        findings, artifacts = await self._llm_enhance_findings(
+            query, sources, regex_findings, self._build_artifacts(all_signals)
+        )
 
         return AgentOutput(
             agent_name=self.name,

@@ -8,8 +8,17 @@ Priority:
 
 import os
 import re
+import logging
 import httpx
 from datetime import datetime, timezone
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+logger = logging.getLogger(__name__)
 
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")
 FIRECRAWL_BASE = "https://api.firecrawl.dev/v1"
@@ -59,7 +68,8 @@ async def _firecrawl_scrape(url: str) -> dict | None:
             "source": "firecrawl",
             "collected_at": datetime.now(timezone.utc).isoformat(),
         }
-    except Exception:
+    except Exception as e:
+        logger.warning("Firecrawl scrape failed for %s: %s", url, e)
         return None
 
 

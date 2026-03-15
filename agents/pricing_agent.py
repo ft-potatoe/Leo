@@ -51,8 +51,9 @@ class PricingAgent(BaseAgent):
             errors.append(f"Pricing research failed: {e}")
 
         regex_findings = self._generate_findings(all_signals, pricing_profiles, company)
-        findings = await self._llm_enhance_findings(query, sources, regex_findings)
-        artifacts = self._build_artifacts(pricing_profiles)
+        findings, artifacts = await self._llm_enhance_findings(
+            query, sources, regex_findings, self._build_artifacts(pricing_profiles)
+        )
 
         return AgentOutput(
             agent_name=self.name,

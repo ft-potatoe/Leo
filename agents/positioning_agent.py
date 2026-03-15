@@ -55,8 +55,9 @@ class PositioningAgent(BaseAgent):
             errors.append(f"Positioning research failed: {e}")
 
         regex_findings = self._generate_findings(positioning_data, company)
-        findings = await self._llm_enhance_findings(query, sources, regex_findings)
-        artifacts = self._build_artifacts(positioning_data)
+        findings, artifacts = await self._llm_enhance_findings(
+            query, sources, regex_findings, self._build_artifacts(positioning_data)
+        )
 
         return AgentOutput(
             agent_name=self.name,
