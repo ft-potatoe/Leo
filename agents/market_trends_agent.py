@@ -13,7 +13,7 @@ from schemas.evidence_schema import Evidence
 from schemas.artifact_schema import Artifact
 from schemas.finding_schema import Finding
 from schemas.query_schema import QueryRequest
-from tools.search_tools import search_web
+from tools.search_tools import search_web, search_job_postings, search_funding_news
 from tools.scraper_tools import scrape_page
 from tools.discussion_tools import search_reddit, search_hackernews
 
@@ -51,8 +51,11 @@ class MarketTrendsAgent(BaseAgent):
         # Step 4: extract signals from collected data
         signals = self.extract_signals(sources)
 
-        # Step 5: generate findings from signals
-        findings = self.generate_findings(signals, query)
+        # Step 5: generate findings from signals (regex baseline)
+        regex_findings = self.generate_findings(signals, query)
+
+        # Step 5b: enhance with LLM analysis of raw sources
+        findings = await self._llm_enhance_findings(query, sources, regex_findings)
 
         # Step 6: generate artifacts
         artifacts = self._generate_artifacts(signals, query)
@@ -71,12 +74,15 @@ class MarketTrendsAgent(BaseAgent):
         search_query = f"{query.company_name} {query.product_name} market trends {query.query}".strip()
         sources: list[dict] = []
 
-        # Run web search, Reddit, and HN in parallel
+        # Run web search, Reddit, HN, job postings, and funding news in parallel
+        company = query.company_name or query.product_name or ""
         try:
-            web_results, reddit_posts, hn_stories = await asyncio.gather(
+            web_results, reddit_posts, hn_stories, job_results, funding_results = await asyncio.gather(
                 search_web(search_query, num_results=5),
                 search_reddit(search_query, limit=3),
                 search_hackernews(search_query, limit=3),
+                search_job_postings(company, num_results=3),
+                search_funding_news(company, num_results=3),
             )
         except Exception as e:
             errors.append(f"Source collection failed: {str(e)}")
@@ -96,6 +102,16 @@ class MarketTrendsAgent(BaseAgent):
         for s in hn_stories:
             s["source_type"] = "hackernews"
             sources.append(s)
+
+        # Tag job postings (hiring signal = category growth)
+        for r in job_results:
+            r["source_type"] = "job_posting"
+            sources.append(r)
+
+        # Tag funding news
+        for r in funding_results:
+            r["source_type"] = "funding_news"
+            sources.append(r)
 
         # Scrape top 2 web result pages for deeper content
         urls_to_scrape = [r["url"] for r in web_results[:2]]

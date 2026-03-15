@@ -25,6 +25,7 @@ class WinLossAgent(BaseAgent):
         all_signals: list[dict] = []
         errors: list[str] = []
 
+        sources: list[dict] = []
         try:
             sources = await self._collect_sources(company, query.query)
             scraped = await self._scrape_sources(sources)
@@ -44,7 +45,8 @@ class WinLossAgent(BaseAgent):
         except Exception as e:
             errors.append(f"Source collection failed: {e}")
 
-        findings = self._generate_findings(all_signals, company)
+        regex_findings = self._generate_findings(all_signals, company)
+        findings = await self._llm_enhance_findings(query, sources, regex_findings)
         artifacts = self._build_artifacts(all_signals)
 
         return AgentOutput(

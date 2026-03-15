@@ -24,6 +24,7 @@ class PositioningAgent(BaseAgent):
         positioning_data: dict[str, dict] = {}
         errors: list[str] = []
 
+        sources: list[dict] = []
         try:
             sources = await self._collect_sources(company, query.query)
             scraped = await self._scrape_sources(sources)
@@ -53,7 +54,8 @@ class PositioningAgent(BaseAgent):
         except Exception as e:
             errors.append(f"Positioning research failed: {e}")
 
-        findings = self._generate_findings(positioning_data, company)
+        regex_findings = self._generate_findings(positioning_data, company)
+        findings = await self._llm_enhance_findings(query, sources, regex_findings)
         artifacts = self._build_artifacts(positioning_data)
 
         return AgentOutput(

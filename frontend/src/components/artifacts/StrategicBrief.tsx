@@ -34,7 +34,7 @@ function BriefSection({ title, items, icon }: { title: string; items: BriefItem[
         {icon} {title}
       </h4>
       <div className="space-y-2">
-        {items.map((item, i) => (
+        {items?.map((item, i) => (
           <div key={i} className="bg-slate-800/40 rounded-lg p-3">
             <div className="flex items-start justify-between gap-3">
               <p className="text-sm text-slate-200 flex-1">{item.claim}</p>
@@ -57,7 +57,7 @@ function BriefSection({ title, items, icon }: { title: string; items: BriefItem[
                 animate={{ opacity: 1, height: "auto" }}
                 className="mt-2 flex flex-wrap gap-1"
               >
-                {item.sources.map((s) => (
+                {item.sources?.map((s) => (
                   <span key={s} className="text-xs px-2 py-0.5 rounded bg-slate-700/50 text-slate-400">
                     {s}
                   </span>

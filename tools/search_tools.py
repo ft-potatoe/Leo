@@ -75,6 +75,41 @@ async def search_hackernews(query: str, num_results: int = 5) -> list[dict]:
         return []
 
 
+async def search_job_postings(company: str, num_results: int = 5) -> list[dict]:
+    """Search for job postings as a hiring/growth signal.
+    Targets LinkedIn, Lever, Greenhouse, and Workday.
+    """
+    query = (
+        f'"{company}" hiring OR jobs site:linkedin.com OR site:lever.co '
+        f'OR site:greenhouse.io OR site:jobs.ashbyhq.com'
+    )
+    results = await search_web(query, num_results)
+    for r in results:
+        r["source_type"] = "job_posting"
+    return results
+
+
+async def search_funding_news(company: str, num_results: int = 5) -> list[dict]:
+    """Search for funding, investment, and M&A news."""
+    query = (
+        f'"{company}" funding OR "series A" OR "series B" OR raised OR '
+        f'acquisition OR "venture capital" OR IPO'
+    )
+    results = await search_web(query, num_results)
+    for r in results:
+        r["source_type"] = "funding_news"
+    return results
+
+
+async def search_patent_activity(company: str, num_results: int = 3) -> list[dict]:
+    """Search USPTO and Google Patents for pre-launch technical signals."""
+    query = f'site:patents.google.com OR site:patents.justia.com "{company}"'
+    results = await search_web(query, num_results)
+    for r in results:
+        r["source_type"] = "patent"
+    return results
+
+
 def _mock_web_results(query: str, num: int) -> list[dict]:
     """Fallback mock results when no API key is set."""
     now = datetime.now(timezone.utc).isoformat()

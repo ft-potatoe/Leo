@@ -51,7 +51,7 @@ export default function PricingIntelligence({ payload }: Props) {
             </tr>
           </thead>
           <tbody>
-            {payload.competitors.map((c, i) => (
+            {payload.competitors?.map((c, i) => (
               <tr key={c.name} className={`border-b border-slate-800/50 ${i % 2 === 0 ? "bg-slate-800/20" : ""}`}>
                 <td className="px-3 py-2 text-slate-200 font-medium">{c.name}</td>
                 <td className="px-3 py-2">
@@ -72,7 +72,7 @@ export default function PricingIntelligence({ payload }: Props) {
           Willingness-to-Pay Signals
         </h4>
         <div className="space-y-2">
-          {payload.willingness_to_pay.map((s, i) => (
+          {payload.willingness_to_pay?.map((s, i) => (
             <div key={i} className="flex items-start gap-2 bg-slate-800/30 rounded-lg p-2">
               <span className="text-slate-500 mt-0.5">•</span>
               <span className="text-sm text-slate-300 flex-1">{s.signal}</span>
@@ -90,7 +90,7 @@ export default function PricingIntelligence({ payload }: Props) {
           Pricing Gaps & Opportunities
         </h4>
         <div className="space-y-1.5">
-          {payload.gaps.map((gap, i) => (
+          {payload.gaps?.map((gap, i) => (
             <div key={i} className="flex items-start gap-2 bg-emerald-500/5 border-l-2 border-emerald-500/30 rounded-r-lg p-2">
               <span className="text-emerald-500 mt-0.5 shrink-0">▸</span>
               <span className="text-sm text-emerald-300">{gap}</span>

@@ -24,6 +24,7 @@ class PricingAgent(BaseAgent):
         all_signals: list[dict] = []
         pricing_profiles: dict[str, list[dict]] = {}
         errors: list[str] = []
+        sources: list[dict] = []
 
         try:
             sources = await self._collect_sources(company, query.query)
@@ -49,7 +50,8 @@ class PricingAgent(BaseAgent):
         except Exception as e:
             errors.append(f"Pricing research failed: {e}")
 
-        findings = self._generate_findings(all_signals, pricing_profiles, company)
+        regex_findings = self._generate_findings(all_signals, pricing_profiles, company)
+        findings = await self._llm_enhance_findings(query, sources, regex_findings)
         artifacts = self._build_artifacts(pricing_profiles)
 
         return AgentOutput(

@@ -57,7 +57,7 @@ export default function PositioningMap({ payload }: Props) {
           </text>
 
           {/* Competitors */}
-          {payload.competitors.map((c) => {
+          {payload.competitors?.map((c) => {
             const cx = padding + c.x * (width - 2 * padding);
             const cy = height - padding - c.y * (height - 2 * padding);
             const isHovered = hoveredCompetitor === c.name;

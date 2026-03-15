@@ -62,12 +62,12 @@ export default function AdjacentMarketRadar({ payload }: Props) {
           </text>
 
           {/* Nodes */}
-          {payload.rings.map((ring, ringIdx) => {
+          {payload.rings?.map((ring, ringIdx) => {
             const radius = radii[ringIdx];
             const angleStep = (2 * Math.PI) / Math.max(ring.nodes.length, 1);
             const startAngle = -Math.PI / 2;
 
-            return ring.nodes.map((node, nodeIdx) => {
+            return ring.nodes?.map((node, nodeIdx) => {
               const angle = startAngle + nodeIdx * angleStep + ringIdx * 0.5;
               const nx = cx + radius * Math.cos(angle);
               const ny = cy + radius * Math.sin(angle);
@@ -108,7 +108,7 @@ export default function AdjacentMarketRadar({ payload }: Props) {
             exit={{ opacity: 0, height: 0 }}
             className="bg-slate-800/40 rounded-lg p-3 space-y-1"
           >
-            {payload.rings.flatMap((r) => r.nodes).filter((n) => n.name === expandedNode).map((node) => (
+            {payload.rings?.flatMap((r) => r.nodes ?? []).filter((n) => n.name === expandedNode).map((node) => (
               <div key={node.name}>
                 <h4 className="text-sm font-medium text-slate-200">{node.name}</h4>
                 <p className="text-xs text-slate-400">{node.description}</p>
@@ -124,7 +124,7 @@ export default function AdjacentMarketRadar({ payload }: Props) {
 
       {/* Legend */}
       <div className="flex flex-wrap gap-3">
-        {payload.rings.map((ring, i) => (
+        {payload.rings?.map((ring, i) => (
           <div key={ring.label} className="flex items-center gap-1.5">
             <div className={`w-3 h-3 rounded-full ${ringColors[i].bg} ${ringColors[i].border} border`} />
             <span className="text-xs text-slate-400">{ring.label}</span>

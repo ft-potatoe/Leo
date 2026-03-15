@@ -49,9 +49,9 @@ function getDomain(url: string): string {
 export default function SourceTrail({ sources }: Props) {
   const [expanded, setExpanded] = useState(false);
 
-  if (sources.length === 0) return null;
+  if (!sources?.length) return null;
 
-  const grouped = sources.reduce<Record<string, Evidence[]>>((acc, s) => {
+  const grouped = (sources ?? []).reduce<Record<string, Evidence[]>>((acc, s) => {
     const cat = getSourceCategory(s.source_type);
     if (!acc[cat]) acc[cat] = [];
     acc[cat].push(s);

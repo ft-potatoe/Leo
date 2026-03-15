@@ -44,13 +44,13 @@ export default function CompetitiveScorecard({ payload }: Props) {
             </tr>
           </thead>
           <tbody>
-            {payload.competitors.map((c, i) => (
+            {payload.competitors?.map((c, i) => (
               <tr key={c.name} className={`border-b border-slate-800/50 ${i % 2 === 0 ? "bg-slate-800/20" : ""}`}>
                 <td className="px-4 py-3 font-medium text-slate-200 whitespace-nowrap">{c.name}</td>
                 <td className="px-4 py-3 text-slate-400 max-w-[200px]">{c.positioning}</td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-1">
-                    {c.strengths.map((s) => (
+                    {c.strengths?.map((s) => (
                       <span key={s} className="inline-block px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-xs">
                         {s}
                       </span>
@@ -59,7 +59,7 @@ export default function CompetitiveScorecard({ payload }: Props) {
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-1">
-                    {c.weaknesses.map((w) => (
+                    {c.weaknesses?.map((w) => (
                       <span key={w} className="inline-block px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 text-xs">
                         {w}
                       </span>
@@ -78,7 +78,7 @@ export default function CompetitiveScorecard({ payload }: Props) {
       </div>
       <div className="px-4 py-2">
         <SourceTrail
-          sources={payload.competitors.flatMap((c) =>
+          sources={payload.competitors?.flatMap((c) =>
             c.sources.map((s) => ({ url: s, title: s, source_type: "web_search", collected_at: new Date().toISOString(), snippet: "", entity: c.name }))
           )}
         />

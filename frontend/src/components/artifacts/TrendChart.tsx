@@ -26,7 +26,7 @@ const confidenceBadge: Record<string, string> = {
 };
 
 export default function TrendChart({ payload }: Props) {
-  const eventsData = payload.data.filter((d) => d.event);
+  const eventsData = payload.data?.filter((d) => d.event) ?? [];
 
   return (
     <motion.div
@@ -69,7 +69,7 @@ export default function TrendChart({ payload }: Props) {
               }}
               formatter={(value) => [`$${value}M`, "Market ARR"]}
               labelFormatter={(label) => {
-                const point = payload.data.find((d) => d.month === label);
+                const point = payload.data?.find((d) => d.month === label);
                 return point?.event ? `${label}\n📌 ${point.event}` : label;
               }}
             />

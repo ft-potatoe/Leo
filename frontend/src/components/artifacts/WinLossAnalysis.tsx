@@ -42,7 +42,7 @@ function InsightCard({ item, type }: { item: InsightItem; type: "win" | "loss" }
         <SentimentBar value={item.sentiment} />
       </div>
       <div className="flex flex-wrap gap-1">
-        {item.sources.map((s) => (
+        {item.sources?.map((s) => (
           <span
             key={s}
             className={`text-xs px-2 py-0.5 rounded ${
@@ -71,7 +71,7 @@ export default function WinLossAnalysis({ payload }: Props) {
             Why deals are won
           </h4>
           <div className="space-y-2">
-            {payload.wins.map((item, i) => (
+            {payload.wins?.map((item, i) => (
               <InsightCard key={i} item={item} type="win" />
             ))}
           </div>
@@ -81,7 +81,7 @@ export default function WinLossAnalysis({ payload }: Props) {
             Why deals are lost
           </h4>
           <div className="space-y-2">
-            {payload.losses.map((item, i) => (
+            {payload.losses?.map((item, i) => (
               <InsightCard key={i} item={item} type="loss" />
             ))}
           </div>

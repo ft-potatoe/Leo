@@ -50,8 +50,11 @@ class AdjacentThreatAgent(BaseAgent):
         # Step 4: extract threat signals
         signals = self.extract_signals(sources)
 
-        # Step 5: generate findings
-        findings = self.generate_findings(signals, query)
+        # Step 5: generate findings (regex baseline)
+        regex_findings = self.generate_findings(signals, query)
+
+        # Step 5b: enhance with LLM analysis
+        findings = await self._llm_enhance_findings(query, sources, regex_findings)
 
         # Step 6: generate artifacts
         artifacts = self._generate_artifacts(signals, query)
