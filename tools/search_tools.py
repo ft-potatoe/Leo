@@ -1,11 +1,14 @@
 """
 Lightweight search tool wrappers.
-Hackathon-grade: uses httpx + fallback to mock data when APIs are unavailable.
+Uses SerpAPI for real search when available, falls back to mock data otherwise.
 """
 
 import os
 import httpx
 from datetime import datetime, timezone
+from dotenv import load_dotenv
+
+load_dotenv()
 
 SERP_API_KEY = os.getenv("SERP_API_KEY", "")
 SERP_BASE = "https://serpapi.com/search"

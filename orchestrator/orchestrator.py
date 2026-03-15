@@ -9,7 +9,7 @@ from memory.memory_manager import MemoryManager
 from schemas.agent_output import AgentOutput
 from schemas.query_schema import QueryRequest, OrchestratorResponse
 
-AGENT_TIMEOUT_SECONDS = 15
+AGENT_TIMEOUT_SECONDS = 60
 
 
 class Orchestrator:
@@ -67,11 +67,11 @@ class Orchestrator:
         confidence_overview = self.confidence_agent.score_outputs(successful_outputs)
 
         # Run the deeper confidence verifier and include its output
-        verifier_output = self.confidence_verifier.verify_outputs(successful_outputs)
+        verifier_output = await self.confidence_verifier.verify_outputs(successful_outputs)
         successful_outputs.append(verifier_output)
 
         # ── 5. Synthesis ───────────────────────────────────────────
-        synthesis = self.synthesizer_agent.synthesize(
+        synthesis = await self.synthesizer_agent.synthesize(
             query=request,
             outputs=successful_outputs,
             confidence_overview=confidence_overview,

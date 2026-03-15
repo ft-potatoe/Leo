@@ -1,6 +1,7 @@
 """
 PositioningAgent — analyzes messaging, differentiation, category framing,
 and identifies positioning gaps by comparing competitor homepage copy.
+Uses LLM reasoning for deep messaging analysis.
 """
 
 import asyncio
@@ -13,6 +14,38 @@ from schemas.query_schema import QueryRequest
 from tools.search_tools import search_web
 from tools.scraper_tools import extract_page_sections
 from tools.signal_extractors import detect_positioning_signals
+from tools.llm_client import analyze_with_llm_json, is_llm_available
+
+POSITIONING_SYSTEM_PROMPT = """You are a positioning and messaging strategist. You analyze company homepages, product pages, and marketing copy to identify positioning strategy, messaging gaps, and differentiation opportunities.
+
+You must respond with valid JSON matching this schema:
+{
+  "findings": [
+    {
+      "statement": "Specific finding about positioning or messaging",
+      "type": "fact|interpretation|recommendation",
+      "confidence": "low|medium|high",
+      "rationale": "Evidence-backed reasoning"
+    }
+  ],
+  "positioning_summary": {
+    "company_name": {
+      "core_narrative": "What they claim to be",
+      "key_claims": ["list of main value propositions"],
+      "target_audience": "Who they're speaking to",
+      "tone": "Professional/Casual/Technical/etc.",
+      "overused_phrases": ["cliché phrases found"],
+      "differentiation_strength": "strong|moderate|weak"
+    }
+  },
+  "message_gap_heatmap": {
+    "claim_type": {
+      "company_a": true,
+      "company_b": false
+    }
+  },
+  "whitespace_opportunities": ["positioning angles no competitor is claiming"]
+}"""
 
 
 class PositioningAgent(BaseAgent):
@@ -23,6 +56,7 @@ class PositioningAgent(BaseAgent):
         evidence: list[Evidence] = []
         positioning_data: dict[str, dict] = {}
         errors: list[str] = []
+        scraped_texts: list[dict] = []
 
         try:
             sources = await self._collect_sources(company, query.query)
@@ -34,7 +68,6 @@ class PositioningAgent(BaseAgent):
                 if not text:
                     continue
 
-                # Analyze both hero and full text
                 analysis = detect_positioning_signals(hero or text)
                 entity = self._infer_entity(page.get("url", ""), page.get("title", ""), company)
                 positioning_data[entity] = {
@@ -50,11 +83,21 @@ class PositioningAgent(BaseAgent):
                     snippet=(hero or text)[:300],
                     collected_at=page.get("collected_at", datetime.now(timezone.utc).isoformat()),
                 ))
+                scraped_texts.append({
+                    "entity": entity,
+                    "url": page.get("url", ""),
+                    "title": page.get("title", ""),
+                    "hero": (hero or "")[:500],
+                    "full_text": text[:2000],
+                })
         except Exception as e:
             errors.append(f"Positioning research failed: {e}")
 
-        findings = self._generate_findings(positioning_data, company)
-        artifacts = self._build_artifacts(positioning_data)
+        if is_llm_available() and scraped_texts:
+            findings, artifacts = await self._llm_analyze(scraped_texts, company, query.query, positioning_data)
+        else:
+            findings = self._generate_findings(positioning_data, company)
+            artifacts = self._build_artifacts(positioning_data)
 
         return AgentOutput(
             agent_name=self.name,
@@ -64,6 +107,65 @@ class PositioningAgent(BaseAgent):
             artifacts=artifacts,
             errors=errors,
         )
+
+    async def _llm_analyze(
+        self, scraped_texts: list[dict], company: str, query: str, regex_data: dict
+    ) -> tuple[list[Finding], list[Artifact]]:
+        evidence_text = "\n\n---\n\n".join(
+            f"Company: {t['entity']} ({t['url']})\nTitle: {t['title']}\nHero section:\n{t['hero']}\n\nFull page:\n{t['full_text']}"
+            for t in scraped_texts
+        )
+
+        user_prompt = f"""Analyze the positioning and messaging for "{company}" and its competitors.
+
+User's question: {query}
+
+Collected homepage and product page data:
+{evidence_text}
+
+Provide:
+1. Each company's core positioning narrative and key claims
+2. Target audience signals for each company
+3. Overused/cliché phrases that weaken differentiation
+4. A message gap heatmap showing which claims each company makes vs doesn't
+5. Whitespace opportunities — positioning angles nobody is claiming
+6. Specific recommendations for {company}'s messaging strategy
+"""
+        result = await analyze_with_llm_json(POSITIONING_SYSTEM_PROMPT, user_prompt)
+
+        findings: list[Finding] = []
+        artifacts: list[Artifact] = []
+
+        if result and isinstance(result, dict):
+            for f in result.get("findings", []):
+                findings.append(Finding(
+                    statement=f.get("statement", ""),
+                    type=f.get("type", "interpretation"),
+                    confidence=f.get("confidence", "medium"),
+                    rationale=f.get("rationale", ""),
+                ))
+            pos_summary = result.get("positioning_summary", {})
+            if pos_summary:
+                artifacts.append(Artifact(artifact_type="positioning_summary", payload=pos_summary))
+            heatmap = result.get("message_gap_heatmap", {})
+            if heatmap:
+                artifacts.append(Artifact(artifact_type="message_gap_heatmap", payload=heatmap))
+            whitespace = result.get("whitespace_opportunities", [])
+            if whitespace:
+                artifacts.append(Artifact(
+                    artifact_type="whitespace_analysis",
+                    payload={"opportunities": whitespace},
+                ))
+
+        if not findings:
+            findings.append(Finding(
+                statement=f"Positioning analysis for {company} completed with limited data.",
+                type="interpretation",
+                confidence="low",
+                rationale="Could not extract enough messaging data.",
+            ))
+
+        return findings, artifacts
 
     async def _collect_sources(self, company: str, query: str) -> list[dict]:
         searches = await asyncio.gather(
@@ -112,15 +214,9 @@ class PositioningAgent(BaseAgent):
                 confidence="low",
                 rationale="Could not scrape or analyze any competitor pages.",
             )]
-
         findings: list[Finding] = []
-
-        # Per-entity messaging analysis
         for entity, info in data.items():
             claims = info.get("claims", {})
-            overused = info.get("overused", [])
-            icp = info.get("icp_hints", [])
-
             if claims:
                 top_claims = sorted(claims.items(), key=lambda x: -x[1])[:3]
                 claim_summary = ", ".join(c[0].replace("_claim", "") for c in top_claims)
@@ -128,91 +224,18 @@ class PositioningAgent(BaseAgent):
                     statement=f"{entity}'s messaging emphasizes: {claim_summary}.",
                     type="fact",
                     confidence="medium",
-                    rationale=f"Detected from homepage/product page copy analysis.",
+                    rationale="Detected from homepage/product page copy analysis.",
                 ))
-
-            if overused:
-                findings.append(Finding(
-                    statement=f"{entity} uses overused phrases: {', '.join(overused[:3])}.",
-                    type="interpretation",
-                    confidence="medium",
-                    rationale="These phrases are common across SaaS and may dilute differentiation.",
-                ))
-
-            if icp:
-                findings.append(Finding(
-                    statement=f"{entity} appears to target: {', '.join(icp)}.",
-                    type="interpretation",
-                    confidence="low",
-                    rationale="Inferred from language patterns on their site.",
-                ))
-
-        # Cross-entity gap analysis
-        if len(data) >= 2:
-            all_claims: dict[str, int] = {}
-            for info in data.values():
-                for claim, count in info.get("claims", {}).items():
-                    all_claims[claim] = all_claims.get(claim, 0) + 1
-
-            saturated = [c for c, n in all_claims.items() if n >= 2]
-            if saturated:
-                findings.append(Finding(
-                    statement=f"Saturated claims across competitors: {', '.join(c.replace('_claim', '') for c in saturated)}.",
-                    type="interpretation",
-                    confidence="medium",
-                    rationale="Multiple competitors making the same core claims reduces differentiation.",
-                ))
-
-            # Whitespace: claims NOT made by the target company
-            company_key = None
-            for key in data:
-                if company.lower() in key.lower():
-                    company_key = key
-                    break
-            if company_key:
-                company_claims = set(data[company_key].get("claims", {}).keys())
-                competitor_claims = set()
-                for key, info in data.items():
-                    if key != company_key:
-                        competitor_claims.update(info.get("claims", {}).keys())
-                gaps = competitor_claims - company_claims
-                if gaps:
-                    findings.append(Finding(
-                        statement=f"Positioning gap: {company} does not emphasize {', '.join(g.replace('_claim', '') for g in gaps)} unlike competitors.",
-                        type="recommendation",
-                        confidence="medium",
-                        rationale="Competitors claim these areas; could be a differentiation opportunity or gap.",
-                    ))
-
         return findings
 
     def _build_artifacts(self, data: dict[str, dict]) -> list[Artifact]:
         if not data:
             return []
-
-        # Message gap heatmap: entity -> claim presence
         all_claim_types = set()
         for info in data.values():
             all_claim_types.update(info.get("claims", {}).keys())
-
         heatmap = {}
         for entity, info in data.items():
             entity_claims = info.get("claims", {})
-            heatmap[entity] = {
-                claim: entity_claims.get(claim, 0) for claim in sorted(all_claim_types)
-            }
-
-        # Positioning summary
-        summary = {}
-        for entity, info in data.items():
-            summary[entity] = {
-                "top_claims": sorted(info.get("claims", {}).items(), key=lambda x: -x[1])[:3],
-                "overused_phrases": info.get("overused", []),
-                "icp_hints": info.get("icp_hints", []),
-                "hero_snippet": info.get("hero_snippet", ""),
-            }
-
-        return [
-            Artifact(artifact_type="message_gap_heatmap", payload=heatmap),
-            Artifact(artifact_type="positioning_summary", payload=summary),
-        ]
+            heatmap[entity] = {claim: entity_claims.get(claim, 0) for claim in sorted(all_claim_types)}
+        return [Artifact(artifact_type="message_gap_heatmap", payload=heatmap)]

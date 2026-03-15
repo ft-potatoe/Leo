@@ -9,6 +9,10 @@ class QueryRequest(BaseModel):
     product_name: str = ""
     context: Optional[str] = None
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    # Multi-hop deep research fields
+    depth: int = 0
+    max_depth: int = 3
+    parent_query_id: Optional[str] = None
 
 
 class OrchestratorResponse(BaseModel):
@@ -24,3 +28,6 @@ class OrchestratorResponse(BaseModel):
     follow_up_questions: list[str] = []
     agent_outputs: list[dict] = []
     errors: list[str] = []
+    # Multi-hop deep research fields
+    research_threads: list[dict] = []
+    depth_reached: int = 0

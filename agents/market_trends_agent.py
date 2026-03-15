@@ -1,7 +1,7 @@
 """
 MarketTrendsAgent — gathers market signals including category growth,
 new product launches, hiring trends, discussion trends, emerging keywords,
-and funding announcements.
+and funding announcements. Uses LLM for deep trend analysis.
 """
 
 import asyncio
@@ -16,28 +16,51 @@ from schemas.query_schema import QueryRequest
 from tools.search_tools import search_web
 from tools.scraper_tools import scrape_page
 from tools.discussion_tools import search_reddit, search_hackernews
+from tools.llm_client import analyze_with_llm_json, is_llm_available
+
+MARKET_TRENDS_SYSTEM_PROMPT = """You are a market trends analyst. You analyze web search results, news, community discussions, and industry data to identify market direction, growth signals, and emerging patterns.
+
+You must respond with valid JSON matching this schema:
+{
+  "findings": [
+    {
+      "statement": "Specific, grounded market trend finding",
+      "type": "fact|interpretation|recommendation",
+      "confidence": "low|medium|high",
+      "rationale": "Evidence-backed reasoning citing specific sources"
+    }
+  ],
+  "trend_timeline": [
+    {
+      "category": "growth|launch|funding|hiring|sentiment",
+      "signal": "description of the signal",
+      "source": "url or source name",
+      "strength": "strong|moderate|weak"
+    }
+  ],
+  "signal_summary": {
+    "market": "market name",
+    "overall_direction": "accelerating|stable|decelerating|consolidating",
+    "growth_signals": 0,
+    "product_launches": 0,
+    "funding_signals": 0,
+    "hiring_signals": 0,
+    "emerging_keywords": ["keyword1", "keyword2"],
+    "sentiment": "positive|cautious|negative|mixed"
+  }
+}"""
 
 
 class MarketTrendsAgent(BaseAgent):
     name = "MarketTrendsAgent"
 
     async def run(self, query: QueryRequest) -> AgentOutput:
-        """
-        Main entry point. Flow:
-        1. Collect sources from web, Reddit, HN
-        2. Scrape top pages for deeper content
-        3. Extract signals from all collected data
-        4. Build findings with confidence levels
-        5. Generate artifacts (trend_timeline, signal_summary)
-        6. Return structured AgentOutput
-        """
         errors: list[str] = []
         evidence: list[Evidence] = []
+        scraped_texts: list[dict] = []
 
-        # Step 1 & 2: collect sources
         sources = await self.collect_sources(query, errors)
 
-        # Step 3: convert raw sources to evidence
         for src in sources:
             evidence.append(Evidence(
                 source_type=src.get("source_type", "web_search"),
@@ -47,15 +70,21 @@ class MarketTrendsAgent(BaseAgent):
                 collected_at=src.get("collected_at", datetime.now(timezone.utc).isoformat()),
                 entity=query.company_name or query.product_name or "",
             ))
+            text = src.get("text", "") or src.get("snippet", "")
+            if text:
+                scraped_texts.append({
+                    "url": src.get("url", ""),
+                    "title": src.get("title", ""),
+                    "source_type": src.get("source_type", "web"),
+                    "text": text[:1500],
+                })
 
-        # Step 4: extract signals from collected data
-        signals = self.extract_signals(sources)
-
-        # Step 5: generate findings from signals
-        findings = self.generate_findings(signals, query)
-
-        # Step 6: generate artifacts
-        artifacts = self._generate_artifacts(signals, query)
+        if is_llm_available() and scraped_texts:
+            findings, artifacts = await self._llm_analyze(scraped_texts, query)
+        else:
+            signals = self.extract_signals(sources)
+            findings = self.generate_findings(signals, query)
+            artifacts = self._generate_artifacts(signals, query)
 
         return AgentOutput(
             agent_name=self.name,
@@ -66,12 +95,64 @@ class MarketTrendsAgent(BaseAgent):
             errors=errors,
         )
 
+    async def _llm_analyze(
+        self, scraped_texts: list[dict], query: QueryRequest
+    ) -> tuple[list[Finding], list[Artifact]]:
+        market = query.company_name or query.product_name or "the target market"
+        evidence_text = "\n\n---\n\n".join(
+            f"Source ({t['source_type']}): {t['url']}\nTitle: {t['title']}\nContent:\n{t['text']}"
+            for t in scraped_texts[:15]
+        )
+
+        user_prompt = f"""Analyze market trends and signals for "{market}".
+
+User's question: {query.query}
+
+Collected market data:
+{evidence_text}
+
+Provide:
+1. Key growth indicators and market direction
+2. Notable product launches and new entrants
+3. Funding activity and investor sentiment
+4. Community discussion sentiment (from Reddit/HN)
+5. Emerging keywords and themes
+6. Overall market trajectory assessment
+"""
+        result = await analyze_with_llm_json(MARKET_TRENDS_SYSTEM_PROMPT, user_prompt)
+
+        findings: list[Finding] = []
+        artifacts: list[Artifact] = []
+
+        if result and isinstance(result, dict):
+            for f in result.get("findings", []):
+                findings.append(Finding(
+                    statement=f.get("statement", ""),
+                    type=f.get("type", "interpretation"),
+                    confidence=f.get("confidence", "medium"),
+                    rationale=f.get("rationale", ""),
+                ))
+            timeline = result.get("trend_timeline", [])
+            if timeline:
+                artifacts.append(Artifact(artifact_type="trend_timeline", payload={"entries": timeline}))
+            summary = result.get("signal_summary", {})
+            if summary:
+                artifacts.append(Artifact(artifact_type="signal_summary", payload=summary))
+
+        if not findings:
+            findings.append(Finding(
+                statement=f"Market trend analysis for {market} completed with limited data.",
+                type="interpretation",
+                confidence="low",
+                rationale="Insufficient signals from available sources.",
+            ))
+
+        return findings, artifacts
+
     async def collect_sources(self, query: QueryRequest, errors: list[str]) -> list[dict]:
-        """Gather raw data from web search, Reddit, HN, and page scraping."""
         search_query = f"{query.company_name} {query.product_name} market trends {query.query}".strip()
         sources: list[dict] = []
 
-        # Run web search, Reddit, and HN in parallel
         try:
             web_results, reddit_posts, hn_stories = await asyncio.gather(
                 search_web(search_query, num_results=5),
@@ -82,30 +163,25 @@ class MarketTrendsAgent(BaseAgent):
             errors.append(f"Source collection failed: {str(e)}")
             return sources
 
-        # Tag and collect web results
         for r in web_results:
             r["source_type"] = "web_search"
             sources.append(r)
-
-        # Tag and collect Reddit posts
         for p in reddit_posts:
             p["source_type"] = "reddit"
             sources.append(p)
-
-        # Tag and collect HN stories
         for s in hn_stories:
             s["source_type"] = "hackernews"
             sources.append(s)
 
-        # Scrape top 2 web result pages for deeper content
+        # Scrape top web results for deeper content
         urls_to_scrape = [r["url"] for r in web_results[:2]]
         scrape_tasks = [scrape_page(url) for url in urls_to_scrape]
         try:
             scraped_pages = await asyncio.gather(*scrape_tasks, return_exceptions=True)
             for page in scraped_pages:
-                if isinstance(page, dict):
+                if isinstance(page, dict) and page.get("text"):
                     page["source_type"] = "scraped_page"
-                    page["snippet"] = page.get("text_content", "")[:300]
+                    page["snippet"] = page.get("text", "")[:300]
                     sources.append(page)
         except Exception as e:
             errors.append(f"Scraping failed: {str(e)}")
@@ -113,11 +189,7 @@ class MarketTrendsAgent(BaseAgent):
         return sources
 
     def extract_signals(self, sources: list[dict]) -> dict:
-        """
-        Analyze collected sources and extract market signal categories.
-        In production, this would use NLP or an LLM to extract real signals.
-        Here we parse mock data for signal patterns.
-        """
+        """Fallback regex-based signal extraction."""
         signals = {
             "growth_indicators": [],
             "product_launches": [],
@@ -126,150 +198,53 @@ class MarketTrendsAgent(BaseAgent):
             "emerging_keywords": [],
             "funding_activity": [],
         }
-
         for src in sources:
             text = (src.get("snippet", "") + " " + src.get("title", "")).lower()
-
-            # Detect growth signals
             if any(kw in text for kw in ["grow", "growth", "increase", "surge", "yoy", "projected"]):
-                signals["growth_indicators"].append({
-                    "signal": src.get("snippet", ""),
-                    "source": src.get("url", ""),
-                    "strength": "strong" if "yoy" in text or "projected" in text else "moderate",
-                })
-
-            # Detect product launches
+                signals["growth_indicators"].append({"signal": src.get("snippet", ""), "source": src.get("url", "")})
             if any(kw in text for kw in ["launch", "new product", "released", "shipped", "show hn"]):
-                signals["product_launches"].append({
-                    "signal": src.get("snippet", ""),
-                    "source": src.get("url", ""),
-                })
-
-            # Detect hiring trends
+                signals["product_launches"].append({"signal": src.get("snippet", ""), "source": src.get("url", "")})
             if any(kw in text for kw in ["hiring", "job", "openings", "posted", "recruiting"]):
-                signals["hiring_trends"].append({
-                    "signal": src.get("snippet", ""),
-                    "source": src.get("url", ""),
-                })
-
-            # Gauge discussion sentiment
+                signals["hiring_trends"].append({"signal": src.get("snippet", ""), "source": src.get("url", "")})
             if src.get("source_type") in ("reddit", "hackernews"):
-                sentiment = "positive"
-                if any(kw in text for kw in ["crowded", "risk", "hype", "overrated"]):
-                    sentiment = "cautious"
-                elif any(kw in text for kw in ["great", "best", "love", "winning"]):
-                    sentiment = "positive"
-                signals["discussion_sentiment"].append({
-                    "signal": src.get("snippet", ""),
-                    "source": src.get("url", ""),
-                    "sentiment": sentiment,
-                })
-
-            # Detect emerging keywords
+                sentiment = "cautious" if any(kw in text for kw in ["crowded", "risk", "hype", "overrated"]) else "positive"
+                signals["discussion_sentiment"].append({"signal": src.get("snippet", ""), "sentiment": sentiment})
             if any(kw in text for kw in ["ai-native", "composable", "open-source", "vertical saas", "api-first"]):
                 matched = [kw for kw in ["ai-native", "composable", "open-source", "vertical saas", "api-first"] if kw in text]
                 signals["emerging_keywords"].extend(matched)
-
-            # Detect funding activity
             if any(kw in text for kw in ["funding", "raised", "series", "venture", "$"]):
-                signals["funding_activity"].append({
-                    "signal": src.get("snippet", ""),
-                    "source": src.get("url", ""),
-                })
-
-        # Deduplicate emerging keywords
+                signals["funding_activity"].append({"signal": src.get("snippet", ""), "source": src.get("url", "")})
         signals["emerging_keywords"] = list(set(signals["emerging_keywords"]))
-
         return signals
 
     def generate_findings(self, signals: dict, query: QueryRequest) -> list[Finding]:
-        """Convert extracted signals into structured Finding objects with confidence levels."""
         findings: list[Finding] = []
         market = query.company_name or query.product_name or "the target market"
-
-        # Growth findings
         if signals["growth_indicators"]:
-            strength = signals["growth_indicators"][0].get("strength", "moderate")
-            confidence = "high" if len(signals["growth_indicators"]) >= 2 else "medium"
             findings.append(Finding(
-                statement=f"The {market} market shows {strength} growth signals across multiple sources.",
+                statement=f"The {market} market shows growth signals across {len(signals['growth_indicators'])} sources.",
                 type="fact",
-                confidence=confidence,
-                rationale=f"Detected {len(signals['growth_indicators'])} growth indicators from web and discussion sources.",
+                confidence="high" if len(signals["growth_indicators"]) >= 2 else "medium",
+                rationale=f"Detected {len(signals['growth_indicators'])} growth indicators.",
             ))
-
-        # Product launch findings
-        if signals["product_launches"]:
-            findings.append(Finding(
-                statement=f"New product launches detected in the {market} space, indicating active market entry.",
-                type="fact",
-                confidence="medium" if len(signals["product_launches"]) >= 2 else "low",
-                rationale=f"Found {len(signals['product_launches'])} recent product launch signals.",
-            ))
-
-        # Hiring findings
-        if signals["hiring_trends"]:
-            findings.append(Finding(
-                statement=f"Hiring activity in the {market} space is elevated, suggesting expansion across vendors.",
-                type="interpretation",
-                confidence="medium",
-                rationale=f"Detected {len(signals['hiring_trends'])} hiring-related signals.",
-            ))
-
-        # Discussion sentiment findings
-        if signals["discussion_sentiment"]:
-            cautious = sum(1 for s in signals["discussion_sentiment"] if s["sentiment"] == "cautious")
-            total = len(signals["discussion_sentiment"])
-            if cautious > total / 2:
-                findings.append(Finding(
-                    statement=f"Community sentiment around {market} is cautious — concerns about market crowding.",
-                    type="interpretation",
-                    confidence="medium",
-                    rationale=f"{cautious}/{total} discussion sources express caution.",
-                ))
-            else:
-                findings.append(Finding(
-                    statement=f"Community sentiment around {market} is generally positive with strong interest.",
-                    type="interpretation",
-                    confidence="medium",
-                    rationale=f"Majority of {total} discussion sources are positive.",
-                ))
-
-        # Emerging keyword findings
-        if signals["emerging_keywords"]:
-            kw_list = ", ".join(signals["emerging_keywords"])
-            findings.append(Finding(
-                statement=f"Emerging keywords in the space: {kw_list}.",
-                type="fact",
-                confidence="medium",
-                rationale="Keywords extracted from web search and community discussions.",
-            ))
-
-        # Funding findings
         if signals["funding_activity"]:
             findings.append(Finding(
-                statement=f"Active funding rounds detected in the {market} space, signaling investor confidence.",
+                statement=f"Active funding rounds detected in the {market} space.",
                 type="fact",
                 confidence="high" if len(signals["funding_activity"]) >= 2 else "medium",
-                rationale=f"Found {len(signals['funding_activity'])} funding-related signals.",
+                rationale=f"Found {len(signals['funding_activity'])} funding signals.",
             ))
-
-        # Fallback if no signals found
         if not findings:
             findings.append(Finding(
-                statement=f"Insufficient data to determine clear market trends for {market}.",
+                statement=f"Insufficient data for market trends for {market}.",
                 type="interpretation",
                 confidence="low",
-                rationale="No strong signals detected from available sources.",
+                rationale="No strong signals detected.",
             ))
-
         return findings
 
     def _generate_artifacts(self, signals: dict, query: QueryRequest) -> list[Artifact]:
-        """Generate trend_timeline and signal_summary artifacts."""
         market = query.company_name or query.product_name or "target market"
-
-        # Trend timeline artifact
         timeline_entries = []
         for category in ["growth_indicators", "product_launches", "funding_activity"]:
             for sig in signals.get(category, []):
@@ -278,22 +253,13 @@ class MarketTrendsAgent(BaseAgent):
                     "signal": sig.get("signal", "")[:200],
                     "source": sig.get("source", ""),
                 })
-
-        # Signal summary artifact
         signal_summary = {
             "market": market,
             "total_sources_analyzed": sum(len(v) if isinstance(v, list) else 0 for v in signals.values()),
             "growth_signal_count": len(signals["growth_indicators"]),
             "product_launch_count": len(signals["product_launches"]),
-            "hiring_signal_count": len(signals["hiring_trends"]),
-            "funding_signal_count": len(signals["funding_activity"]),
             "emerging_keywords": signals["emerging_keywords"],
-            "discussion_sentiment_breakdown": {
-                "positive": sum(1 for s in signals["discussion_sentiment"] if s.get("sentiment") == "positive"),
-                "cautious": sum(1 for s in signals["discussion_sentiment"] if s.get("sentiment") == "cautious"),
-            },
         }
-
         return [
             Artifact(artifact_type="trend_timeline", payload={"entries": timeline_entries}),
             Artifact(artifact_type="signal_summary", payload=signal_summary),

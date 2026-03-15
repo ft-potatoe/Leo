@@ -2,12 +2,48 @@
 ConfidenceVerifierAgent — inspects findings from all other agents,
 normalizes confidence, detects low-evidence claims and contradictions,
 and separates fact from interpretation.
+Uses LLM for deeper semantic contradiction detection when available.
 """
 
 from agents.base_agent import BaseAgent
 from schemas.agent_output import AgentOutput, Artifact
 from schemas.finding_schema import Finding
 from schemas.query_schema import QueryRequest
+from tools.llm_client import analyze_with_llm_json, is_llm_available
+
+VERIFIER_SYSTEM_PROMPT = """You are a research quality auditor. You review findings from multiple specialist research agents and identify:
+
+1. Contradictions — findings that conflict with each other
+2. Unsupported claims — high-confidence statements with weak rationale
+3. Consensus — findings where multiple agents agree
+4. Evidence gaps — important areas with no coverage
+
+You must respond with valid JSON matching this schema:
+{
+  "contradictions": [
+    {
+      "finding_a": "first contradicting statement",
+      "finding_b": "second contradicting statement",
+      "explanation": "why these contradict"
+    }
+  ],
+  "unsupported_claims": [
+    {
+      "statement": "the claim",
+      "issue": "why the evidence is insufficient"
+    }
+  ],
+  "consensus_areas": [
+    {
+      "theme": "what multiple agents agree on",
+      "supporting_agents": ["agent1", "agent2"],
+      "confidence_boost": "high"
+    }
+  ],
+  "evidence_gaps": ["area with no coverage"],
+  "overall_quality": "high|medium|low",
+  "quality_rationale": "1-2 sentence assessment"
+}"""
 
 
 class ConfidenceVerifierAgent(BaseAgent):
@@ -21,7 +57,7 @@ class ConfidenceVerifierAgent(BaseAgent):
     async def run(self, query: QueryRequest) -> AgentOutput:
         return AgentOutput(agent_name=self.name, status="success")
 
-    def verify_outputs(self, outputs: list[AgentOutput]) -> AgentOutput:
+    async def verify_outputs(self, outputs: list[AgentOutput]) -> AgentOutput:
         """
         Inspect all agent outputs and produce:
         - normalized confidence scores
@@ -48,6 +84,7 @@ class ConfidenceVerifierAgent(BaseAgent):
                     "statement": finding.statement,
                     "type": finding.type,
                     "original_confidence": finding.confidence,
+                    "rationale": finding.rationale if hasattr(finding, "rationale") else "",
                 })
                 self._normalize_finding(finding, agent_score)
 
@@ -55,15 +92,19 @@ class ConfidenceVerifierAgent(BaseAgent):
             issues = self._check_quality(output, agent_score)
             quality_issues.extend(issues)
 
-        # Detect contradictions across agents
-        contradictions = self._detect_contradictions(all_statements)
-        for c in contradictions:
-            verification_findings.append(Finding(
-                statement=f"Potential contradiction: '{c['a']['statement'][:80]}...' vs '{c['b']['statement'][:80]}...'",
-                type="interpretation",
-                confidence="low",
-                rationale=f"Opposing signals from {c['a']['agent']} and {c['b']['agent']}.",
-            ))
+        # Detect contradictions — LLM when available, else keyword-based
+        if is_llm_available() and len(all_statements) >= 2:
+            llm_findings, llm_artifacts = await self._llm_verify(all_statements, panel)
+            verification_findings.extend(llm_findings)
+        else:
+            contradictions = self._detect_contradictions(all_statements)
+            for c in contradictions:
+                verification_findings.append(Finding(
+                    statement=f"Potential contradiction: '{c['a']['statement'][:80]}...' vs '{c['b']['statement'][:80]}...'",
+                    type="interpretation",
+                    confidence="low",
+                    rationale=f"Opposing signals from {c['a']['agent']} and {c['b']['agent']}.",
+                ))
 
         # Summary findings
         low_confidence_agents = [
@@ -104,7 +145,9 @@ class ConfidenceVerifierAgent(BaseAgent):
                     "total_agents_reviewed": len(panel),
                     "high_confidence": len(high_confidence_agents),
                     "low_confidence": len(low_confidence_agents),
-                    "contradictions_found": len(contradictions),
+                    "contradictions_found": sum(
+                        1 for f in verification_findings if "contradiction" in f.statement.lower()
+                    ),
                     "quality_issues": quality_issues,
                 },
             ),
@@ -116,6 +159,90 @@ class ConfidenceVerifierAgent(BaseAgent):
             findings=verification_findings,
             artifacts=artifacts,
         )
+
+    async def _llm_verify(
+        self, all_statements: list[dict], panel: dict
+    ) -> tuple[list[Finding], list[Artifact]]:
+        """Use Claude to detect semantic contradictions and assess quality."""
+        findings_text = "\n".join(
+            f"- [{s['agent']}] ({s['original_confidence']}) {s['statement']}"
+            for s in all_statements
+        )
+        confidence_text = "\n".join(
+            f"- {name}: confidence={info.get('confidence', 'n/a')}, evidence_count={info.get('evidence_count', 0)}, diversity={info.get('source_diversity', 0)}"
+            for name, info in panel.items()
+            if isinstance(info, dict)
+        )
+
+        user_prompt = f"""Review these findings from multiple research agents for quality issues:
+
+Findings:
+{findings_text}
+
+Agent confidence scores:
+{confidence_text}
+
+Identify contradictions, unsupported claims, areas of consensus, and evidence gaps."""
+
+        result = await analyze_with_llm_json(VERIFIER_SYSTEM_PROMPT, user_prompt)
+
+        findings: list[Finding] = []
+        artifacts: list[Artifact] = []
+
+        if result and isinstance(result, dict):
+            # Contradictions
+            for c in result.get("contradictions", []):
+                findings.append(Finding(
+                    statement=f"Contradiction detected: {c.get('explanation', 'conflicting findings')}",
+                    type="interpretation",
+                    confidence="medium",
+                    rationale=f"'{c.get('finding_a', '')[:60]}' vs '{c.get('finding_b', '')[:60]}'",
+                ))
+
+            # Unsupported claims
+            for u in result.get("unsupported_claims", []):
+                findings.append(Finding(
+                    statement=f"Unsupported claim: {u.get('statement', '')[:100]}",
+                    type="interpretation",
+                    confidence="medium",
+                    rationale=u.get("issue", "Evidence insufficient for stated confidence."),
+                ))
+
+            # Consensus
+            for con in result.get("consensus_areas", []):
+                findings.append(Finding(
+                    statement=f"Multi-agent consensus: {con.get('theme', '')}",
+                    type="fact",
+                    confidence="high",
+                    rationale=f"Supported by: {', '.join(con.get('supporting_agents', []))}",
+                ))
+
+            # Evidence gaps
+            gaps = result.get("evidence_gaps", [])
+            if gaps:
+                findings.append(Finding(
+                    statement=f"Evidence gaps identified: {'; '.join(gaps[:5])}",
+                    type="interpretation",
+                    confidence="medium",
+                    rationale="Areas where no agent provided coverage.",
+                ))
+
+            # Quality assessment artifact
+            quality = result.get("overall_quality", "medium")
+            rationale = result.get("quality_rationale", "")
+            if quality or rationale:
+                artifacts.append(Artifact(
+                    artifact_type="llm_quality_assessment",
+                    payload={
+                        "overall_quality": quality,
+                        "rationale": rationale,
+                        "contradictions": len(result.get("contradictions", [])),
+                        "consensus_areas": len(result.get("consensus_areas", [])),
+                        "evidence_gaps": gaps,
+                    },
+                ))
+
+        return findings, artifacts
 
     def _score_agent(self, output: AgentOutput) -> dict:
         """Score an agent's output based on evidence quantity and diversity."""

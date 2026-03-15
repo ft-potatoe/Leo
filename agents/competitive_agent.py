@@ -1,7 +1,7 @@
 """
 CompetitiveLandscapeAgent — gathers competitive intelligence including
-competitor product positioning, feature launches, pricing changes,
-messaging shifts, integrations, and partnerships.
+competitor positioning, feature launches, pricing changes, and partnerships.
+Uses LLM for deep competitive analysis.
 """
 
 import asyncio
@@ -16,28 +16,50 @@ from schemas.query_schema import QueryRequest
 from tools.search_tools import search_web
 from tools.scraper_tools import scrape_page
 from tools.discussion_tools import search_reddit, search_hackernews
+from tools.llm_client import analyze_with_llm_json, is_llm_available
+
+COMPETITIVE_SYSTEM_PROMPT = """You are a competitive intelligence analyst. You analyze web data, community discussions, and product pages to map the competitive landscape.
+
+You must respond with valid JSON matching this schema:
+{
+  "findings": [
+    {
+      "statement": "Specific competitive intelligence finding",
+      "type": "fact|interpretation|recommendation",
+      "confidence": "low|medium|high",
+      "rationale": "Evidence-backed reasoning"
+    }
+  ],
+  "competitor_matrix": {
+    "company_name": {
+      "positioning": "how they position themselves",
+      "key_features": ["feature1", "feature2"],
+      "pricing_approach": "freemium|enterprise|tiered|usage-based",
+      "strengths": ["strength1"],
+      "weaknesses": ["weakness1"],
+      "recent_moves": ["notable recent actions"]
+    }
+  },
+  "feature_comparison": {
+    "feature_category": {
+      "company_a": true,
+      "company_b": false
+    }
+  },
+  "competitive_dynamics": "1-2 sentence summary of competitive landscape"
+}"""
 
 
 class CompetitiveLandscapeAgent(BaseAgent):
     name = "CompetitiveLandscapeAgent"
 
     async def run(self, query: QueryRequest) -> AgentOutput:
-        """
-        Main entry point. Flow:
-        1. Collect sources about competitors
-        2. Scrape competitor pages for positioning data
-        3. Extract competitive signals
-        4. Build grounded findings
-        5. Generate artifacts (competitor_matrix, feature_comparison)
-        6. Return structured AgentOutput
-        """
         errors: list[str] = []
         evidence: list[Evidence] = []
+        scraped_texts: list[dict] = []
 
-        # Step 1 & 2: collect sources
         sources = await self.collect_sources(query, errors)
 
-        # Step 3: convert raw sources to evidence
         for src in sources:
             evidence.append(Evidence(
                 source_type=src.get("source_type", "web_search"),
@@ -47,15 +69,21 @@ class CompetitiveLandscapeAgent(BaseAgent):
                 collected_at=src.get("collected_at", datetime.now(timezone.utc).isoformat()),
                 entity=src.get("entity", query.company_name or ""),
             ))
+            text = src.get("text", "") or src.get("snippet", "")
+            if text:
+                scraped_texts.append({
+                    "url": src.get("url", ""),
+                    "title": src.get("title", ""),
+                    "source_type": src.get("source_type", "web"),
+                    "text": text[:1500],
+                })
 
-        # Step 4: extract competitive signals
-        signals = self.extract_signals(sources)
-
-        # Step 5: generate findings
-        findings = self.generate_findings(signals, query)
-
-        # Step 6: generate artifacts
-        artifacts = self._generate_artifacts(signals, query)
+        if is_llm_available() and scraped_texts:
+            findings, artifacts = await self._llm_analyze(scraped_texts, query)
+        else:
+            signals = self.extract_signals(sources)
+            findings = self.generate_findings(signals, query)
+            artifacts = self._generate_artifacts(signals, query)
 
         return AgentOutput(
             agent_name=self.name,
@@ -66,13 +94,71 @@ class CompetitiveLandscapeAgent(BaseAgent):
             errors=errors,
         )
 
+    async def _llm_analyze(
+        self, scraped_texts: list[dict], query: QueryRequest
+    ) -> tuple[list[Finding], list[Artifact]]:
+        company = query.company_name or query.product_name or "the company"
+        evidence_text = "\n\n---\n\n".join(
+            f"Source ({t['source_type']}): {t['url']}\nTitle: {t['title']}\nContent:\n{t['text']}"
+            for t in scraped_texts[:15]
+        )
+
+        user_prompt = f"""Map the competitive landscape for "{company}".
+
+User's question: {query.query}
+
+Collected competitive intelligence:
+{evidence_text}
+
+Provide:
+1. Key competitors and their positioning
+2. Feature comparison across competitors
+3. Pricing approaches in the market
+4. Recent competitive moves (launches, partnerships, pricing changes)
+5. Strengths and weaknesses of each competitor
+6. Strategic recommendations for {company}
+"""
+        result = await analyze_with_llm_json(COMPETITIVE_SYSTEM_PROMPT, user_prompt)
+
+        findings: list[Finding] = []
+        artifacts: list[Artifact] = []
+
+        if result and isinstance(result, dict):
+            for f in result.get("findings", []):
+                findings.append(Finding(
+                    statement=f.get("statement", ""),
+                    type=f.get("type", "interpretation"),
+                    confidence=f.get("confidence", "medium"),
+                    rationale=f.get("rationale", ""),
+                ))
+            matrix = result.get("competitor_matrix", {})
+            if matrix:
+                artifacts.append(Artifact(artifact_type="competitor_matrix", payload=matrix))
+            comparison = result.get("feature_comparison", {})
+            if comparison:
+                artifacts.append(Artifact(artifact_type="feature_comparison", payload=comparison))
+            dynamics = result.get("competitive_dynamics", "")
+            if dynamics:
+                artifacts.append(Artifact(
+                    artifact_type="competitive_summary",
+                    payload={"summary": dynamics, "competitor_count": len(matrix)},
+                ))
+
+        if not findings:
+            findings.append(Finding(
+                statement=f"Competitive analysis for {company} completed with limited data.",
+                type="interpretation",
+                confidence="low",
+                rationale="Insufficient competitive data from available sources.",
+            ))
+
+        return findings, artifacts
+
     async def collect_sources(self, query: QueryRequest, errors: list[str]) -> list[dict]:
-        """Gather competitive intelligence from web, discussions, and page scraping."""
         company = query.company_name or query.product_name or "company"
         base_query = f"{company} competitors {query.query}".strip()
         sources: list[dict] = []
 
-        # Parallel: web search for competitors, pricing, features, and discussions
         try:
             competitor_results, pricing_results, feature_results, reddit_posts, hn_stories = await asyncio.gather(
                 search_web(f"{base_query} competitive landscape", num_results=3),
@@ -85,33 +171,27 @@ class CompetitiveLandscapeAgent(BaseAgent):
             errors.append(f"Source collection failed: {str(e)}")
             return sources
 
-        # Tag web results by search intent
         for r in competitor_results:
             r["source_type"] = "web_search"
             r["entity"] = company
             sources.append(r)
-
         for r in pricing_results:
             r["source_type"] = "pricing_research"
             r["entity"] = company
             sources.append(r)
-
         for r in feature_results:
             r["source_type"] = "feature_research"
             r["entity"] = company
             sources.append(r)
-
         for p in reddit_posts:
             p["source_type"] = "reddit"
             p["entity"] = company
             sources.append(p)
-
         for s in hn_stories:
             s["source_type"] = "hackernews"
             s["entity"] = company
             sources.append(s)
 
-        # Scrape top pages for deeper competitive content
         urls_to_scrape = [r["url"] for r in competitor_results[:2]]
         try:
             scraped = await asyncio.gather(
@@ -119,9 +199,9 @@ class CompetitiveLandscapeAgent(BaseAgent):
                 return_exceptions=True,
             )
             for page in scraped:
-                if isinstance(page, dict):
+                if isinstance(page, dict) and page.get("text"):
                     page["source_type"] = "scraped_page"
-                    page["snippet"] = page.get("text_content", "")[:300]
+                    page["snippet"] = page.get("text", "")[:300]
                     page["entity"] = company
                     sources.append(page)
         except Exception as e:
@@ -130,173 +210,61 @@ class CompetitiveLandscapeAgent(BaseAgent):
         return sources
 
     def extract_signals(self, sources: list[dict]) -> dict:
-        """Parse collected sources for competitive signal categories."""
+        """Fallback regex-based signal extraction."""
         signals = {
             "positioning": [],
             "feature_launches": [],
             "pricing_signals": [],
-            "messaging_shifts": [],
             "integrations_partnerships": [],
             "competitor_mentions": [],
         }
-
         for src in sources:
             text = (src.get("snippet", "") + " " + src.get("title", "")).lower()
-
-            # Positioning signals
-            if any(kw in text for kw in ["leader", "positioned", "ranked", "market share", "top vendor", "g2"]):
-                signals["positioning"].append({
-                    "signal": src.get("snippet", ""),
-                    "source": src.get("url", ""),
-                })
-
-            # Feature launch signals
-            if any(kw in text for kw in ["launch", "feature", "released", "shipped", "new capability", "beta"]):
-                signals["feature_launches"].append({
-                    "signal": src.get("snippet", ""),
-                    "source": src.get("url", ""),
-                })
-
-            # Pricing signals
-            if any(kw in text for kw in ["pricing", "price", "cost", "tier", "freemium", "$", "enterprise"]):
-                signals["pricing_signals"].append({
-                    "signal": src.get("snippet", ""),
-                    "source": src.get("url", ""),
-                })
-
-            # Messaging shifts
-            if any(kw in text for kw in ["messaging", "brand", "positioning", "narrative", "homepage", "tagline"]):
-                signals["messaging_shifts"].append({
-                    "signal": src.get("snippet", ""),
-                    "source": src.get("url", ""),
-                })
-
-            # Integration and partnership signals
-            if any(kw in text for kw in ["integration", "partnership", "partner", "salesforce", "hubspot", "api"]):
-                signals["integrations_partnerships"].append({
-                    "signal": src.get("snippet", ""),
-                    "source": src.get("url", ""),
-                })
-
-            # Track competitor mentions from discussions
+            if any(kw in text for kw in ["leader", "positioned", "ranked", "market share"]):
+                signals["positioning"].append({"signal": src.get("snippet", ""), "source": src.get("url", "")})
+            if any(kw in text for kw in ["launch", "feature", "released", "shipped"]):
+                signals["feature_launches"].append({"signal": src.get("snippet", ""), "source": src.get("url", "")})
+            if any(kw in text for kw in ["pricing", "price", "cost", "tier", "freemium"]):
+                signals["pricing_signals"].append({"signal": src.get("snippet", ""), "source": src.get("url", "")})
+            if any(kw in text for kw in ["integration", "partnership", "partner"]):
+                signals["integrations_partnerships"].append({"signal": src.get("snippet", ""), "source": src.get("url", "")})
             if src.get("source_type") in ("reddit", "hackernews"):
-                if any(kw in text for kw in ["vs", "alternative", "switched", "compared", "competitor"]):
-                    signals["competitor_mentions"].append({
-                        "signal": src.get("snippet", ""),
-                        "source": src.get("url", ""),
-                        "sentiment": "negative" if any(kw in text for kw in ["left", "switched from", "worse"]) else "neutral",
-                    })
-
+                if any(kw in text for kw in ["vs", "alternative", "switched", "compared"]):
+                    signals["competitor_mentions"].append({"signal": src.get("snippet", ""), "source": src.get("url", "")})
         return signals
 
     def generate_findings(self, signals: dict, query: QueryRequest) -> list[Finding]:
-        """Convert competitive signals into structured Finding objects."""
         findings: list[Finding] = []
-        company = query.company_name or query.product_name or "the company"
-
-        # Positioning findings
+        company = query.company_name or "the company"
         if signals["positioning"]:
             findings.append(Finding(
-                statement=f"{company} is referenced in competitive positioning data across {len(signals['positioning'])} sources.",
+                statement=f"{company} appears in competitive positioning data across {len(signals['positioning'])} sources.",
                 type="fact",
                 confidence="high" if len(signals["positioning"]) >= 2 else "medium",
-                rationale=f"Found {len(signals['positioning'])} positioning references from review sites and reports.",
+                rationale=f"Found {len(signals['positioning'])} positioning references.",
             ))
-
-        # Feature launch findings
         if signals["feature_launches"]:
             findings.append(Finding(
-                statement=f"Competitors are actively shipping new features — {len(signals['feature_launches'])} launch signals detected.",
+                statement=f"Competitors are shipping new features — {len(signals['feature_launches'])} launch signals detected.",
                 type="fact",
                 confidence="medium",
-                rationale="Feature launch signals found across web search and product pages.",
+                rationale="Feature launch signals from web and product pages.",
             ))
-
-        # Pricing findings
-        if signals["pricing_signals"]:
-            findings.append(Finding(
-                statement=f"Pricing activity detected: competitors are adjusting tiers and introducing freemium models.",
-                type="interpretation",
-                confidence="medium" if len(signals["pricing_signals"]) >= 2 else "low",
-                rationale=f"Found {len(signals['pricing_signals'])} pricing-related signals.",
-            ))
-
-        # Integration findings
-        if signals["integrations_partnerships"]:
-            findings.append(Finding(
-                statement=f"Competitors are forming strategic integrations and partnerships to increase switching costs.",
-                type="interpretation",
-                confidence="medium",
-                rationale=f"Detected {len(signals['integrations_partnerships'])} integration/partnership signals.",
-            ))
-
-        # Community perception findings
-        if signals["competitor_mentions"]:
-            negative = sum(1 for m in signals["competitor_mentions"] if m.get("sentiment") == "negative")
-            total = len(signals["competitor_mentions"])
-            findings.append(Finding(
-                statement=f"Community discussions actively compare {company} with competitors — {negative}/{total} mentions indicate switching behavior.",
-                type="fact",
-                confidence="medium",
-                rationale="Based on Reddit and Hacker News discussion analysis.",
-            ))
-
-        # Messaging findings
-        if signals["messaging_shifts"]:
-            findings.append(Finding(
-                statement=f"Messaging shifts detected among competitors — emphasis moving toward AI and enterprise security.",
-                type="interpretation",
-                confidence="low",
-                rationale=f"Detected {len(signals['messaging_shifts'])} messaging-related signals. Confidence is low due to limited data.",
-            ))
-
         if not findings:
             findings.append(Finding(
-                statement=f"Insufficient competitive data available for {company}.",
+                statement=f"Insufficient competitive data for {company}.",
                 type="interpretation",
                 confidence="low",
-                rationale="No strong competitive signals detected from available sources.",
+                rationale="No strong signals detected.",
             ))
-
         return findings
 
     def _generate_artifacts(self, signals: dict, query: QueryRequest) -> list[Artifact]:
-        """Generate competitor_matrix and feature_comparison artifacts."""
-        company = query.company_name or query.product_name or "target company"
-
-        # Competitor matrix — summary of competitive landscape
+        company = query.company_name or "target company"
         competitor_matrix = {
             "company": company,
             "total_competitive_signals": sum(len(v) for v in signals.values()),
             "positioning_mentions": len(signals["positioning"]),
             "feature_launch_count": len(signals["feature_launches"]),
-            "pricing_signal_count": len(signals["pricing_signals"]),
-            "integration_count": len(signals["integrations_partnerships"]),
-            "community_mention_count": len(signals["competitor_mentions"]),
-            "top_signals": [
-                s.get("signal", "")[:200]
-                for s in (signals["positioning"] + signals["feature_launches"])[:5]
-            ],
         }
-
-        # Feature comparison — what competitors are shipping
-        feature_comparison = {
-            "company": company,
-            "competitor_features_detected": [
-                {"feature_signal": s.get("signal", "")[:200], "source": s.get("source", "")}
-                for s in signals["feature_launches"][:5]
-            ],
-            "pricing_landscape": [
-                {"pricing_signal": s.get("signal", "")[:200], "source": s.get("source", "")}
-                for s in signals["pricing_signals"][:5]
-            ],
-            "integration_landscape": [
-                {"integration_signal": s.get("signal", "")[:200], "source": s.get("source", "")}
-                for s in signals["integrations_partnerships"][:5]
-            ],
-        }
-
-        return [
-            Artifact(artifact_type="competitor_matrix", payload=competitor_matrix),
-            Artifact(artifact_type="feature_comparison", payload=feature_comparison),
-        ]
+        return [Artifact(artifact_type="competitor_matrix", payload=competitor_matrix)]
