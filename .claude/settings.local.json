@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(node \"c:\\\\Users\\\\ACER\\\\Desktop\\\\projectsss\\\\TL\\\\leo\\\\Leo\\\\frontend\\\\node_modules\\\\.bin\\\\next\" --version)"
     ]
   }
 }

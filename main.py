@@ -2,6 +2,13 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Load .env before any module reads os.getenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv optional; keys may already be set in environment
+
 from api.routes.query import router as query_router
 
 app = FastAPI(
